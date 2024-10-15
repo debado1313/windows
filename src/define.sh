@@ -1637,6 +1637,30 @@ validVersion() {
   return 1
 }
 
+addFolder() {
+
+  local src="$1"
+  local folder="/oem"
+
+  [ ! -d "$folder" ] && folder="/OEM"
+  [ ! -d "$folder" ] && folder="$STORAGE/oem"
+  [ ! -d "$folder" ] && folder="$STORAGE/OEM"
+  [ ! -d "$folder" ] && return 0
+
+  local msg="Adding OEM folder to image..."
+  info "$msg" && html "$msg"
+
+  local dest="$src/\$OEM\$/\$1/OEM"
+  mkdir -p "$dest" || return 1
+  cp -Lr "$folder/." "$dest" || return 1
+
+  local file
+  file=$(find "$dest" -maxdepth 1 -type f -iname install.bat | head -n 1)
+  [ -f "$file" ] && unix2dos -q "$file"
+
+  return 0
+}
+
 migrateFiles() {
 
   local base="$1"
@@ -1653,7 +1677,7 @@ migrateFiles() {
   [[ "${version,,}" == "win7x64" ]] && file="en_windows_7_enterprise_with_sp1_x64_dvd_u_677651.iso"
 
   [ ! -f "$STORAGE/$file" ] && return 0
-  ! mv -f "$STORAGE/$file" "$base" && return 1
+  mv -f "$STORAGE/$file" "$base" || return 1
 
   return 0
 }
@@ -1665,7 +1689,10 @@ prepareInstall() {
   local arch="$4"
   local key="$5"
   local driver="$6"
-  local drivers="$TMP/drivers"
+  local drivers="/tmp/drivers"
+
+  rm -rf "$drivers"
+  mkdir -p "$drivers"
 
   ETFS="[BOOT]/Boot-NoEmul.img"
 
@@ -1676,9 +1703,7 @@ prepareInstall() {
   local msg="Adding drivers to image..."
   info "$msg" && html "$msg"
 
-  mkdir -p "$drivers"
-
-  if ! tar -xf /drivers.txz -C "$drivers" --warning=no-timestamp; then
+  if ! bsdtar -xf /drivers.txz -C "$drivers"; then
     error "Failed to extract drivers!" && return 1
   fi
 
@@ -1689,21 +1714,21 @@ prepareInstall() {
     error "Failed to locate required storage drivers!" && return 1
   fi
 
-  cp "$drivers/viostor/$driver/$arch/viostor.sys" "$target"
+  cp -L "$drivers/viostor/$driver/$arch/viostor.sys" "$target" || return 1
 
-  mkdir -p "$dir/\$OEM\$/\$1/Drivers/viostor"
-  cp "$drivers/viostor/$driver/$arch/viostor.cat" "$dir/\$OEM\$/\$1/Drivers/viostor"
-  cp "$drivers/viostor/$driver/$arch/viostor.inf" "$dir/\$OEM\$/\$1/Drivers/viostor"
-  cp "$drivers/viostor/$driver/$arch/viostor.sys" "$dir/\$OEM\$/\$1/Drivers/viostor"
+  mkdir -p "$dir/\$OEM\$/\$1/Drivers/viostor" || return 1
+  cp -L "$drivers/viostor/$driver/$arch/viostor.cat" "$dir/\$OEM\$/\$1/Drivers/viostor" || return 1
+  cp -L "$drivers/viostor/$driver/$arch/viostor.inf" "$dir/\$OEM\$/\$1/Drivers/viostor" || return 1
+  cp -L "$drivers/viostor/$driver/$arch/viostor.sys" "$dir/\$OEM\$/\$1/Drivers/viostor" || return 1
 
   if [ ! -f "$drivers/NetKVM/$driver/$arch/netkvm.sys" ]; then
     error "Failed to locate required network drivers!" && return 1
   fi
 
-  mkdir -p "$dir/\$OEM\$/\$1/Drivers/NetKVM"
-  cp "$drivers/NetKVM/$driver/$arch/netkvm.cat" "$dir/\$OEM\$/\$1/Drivers/NetKVM"
-  cp "$drivers/NetKVM/$driver/$arch/netkvm.inf" "$dir/\$OEM\$/\$1/Drivers/NetKVM"
-  cp "$drivers/NetKVM/$driver/$arch/netkvm.sys" "$dir/\$OEM\$/\$1/Drivers/NetKVM"
+  mkdir -p "$dir/\$OEM\$/\$1/Drivers/NetKVM" || return 1
+  cp -L "$drivers/NetKVM/$driver/$arch/netkvm.cat" "$dir/\$OEM\$/\$1/Drivers/NetKVM" || return 1
+  cp -L "$drivers/NetKVM/$driver/$arch/netkvm.inf" "$dir/\$OEM\$/\$1/Drivers/NetKVM" || return 1
+  cp -L "$drivers/NetKVM/$driver/$arch/netkvm.sys" "$dir/\$OEM\$/\$1/Drivers/NetKVM" || return 1
 
   if [ ! -f "$target/TXTSETUP.SIF" ]; then
     error "The file TXTSETUP.SIF could not be found!" && return 1
@@ -1721,9 +1746,9 @@ prepareInstall() {
     error "Failed to locate required SATA drivers!" && return 1
   fi
 
-  mkdir -p "$dir/\$OEM\$/\$1/Drivers/sata"
-  cp -a "$drivers/sata/xp/$arch/." "$dir/\$OEM\$/\$1/Drivers/sata"
-  cp -a "$drivers/sata/xp/$arch/." "$target"
+  mkdir -p "$dir/\$OEM\$/\$1/Drivers/sata" || return 1
+  cp -Lr "$drivers/sata/xp/$arch/." "$dir/\$OEM\$/\$1/Drivers/sata" || return 1
+  cp -Lr "$drivers/sata/xp/$arch/." "$target" || return 1
 
   sed -i '/^\[SCSI.Load\]/s/$/\niaStor=iaStor.sys,4/' "$target/TXTSETUP.SIF"
   sed -i '/^\[FileFlags\]/s/$/\niaStor.sys = 16/' "$target/TXTSETUP.SIF"
@@ -1748,22 +1773,13 @@ prepareInstall() {
     warn "this version of $desc requires a volume license key (VLK), it will ask for one during installation."
   fi
 
-  local oem=""
-  local folder="/oem"
-
-  [ ! -d "$folder" ] && folder="/OEM"
-  [ ! -d "$folder" ] && folder="$STORAGE/oem"
-  [ ! -d "$folder" ] && folder="$STORAGE/OEM"
-
-  if [ -d "$folder" ]; then
-
-    file=$(find "$folder" -maxdepth 1 -type f -iname install.bat | head -n 1)
-
-    if [ -f "$file" ]; then
-      unix2dos -q "$file"
-      oem="\"Script\"=\"cmd /C start \\\"Install\\\" \\\"cmd /C C:\\\\OEM\\\\install.bat\\\"\""
-    fi
+  if ! addFolder "$dir"; then
+    error "Failed to add OEM folder to image!" && return 1
   fi
+
+  local oem=""
+  local install="$dir/\$OEM\$/\$1/OEM/install.bat"
+  [ -f "$install" ] && oem="\"Script\"=\"cmd /C start \\\"Install\\\" \\\"cmd /C C:\\\\OEM\\\\install.bat\\\"\""
 
   [ -z "$YRES" ] && YRES="720"
   [ -z "$XRES" ] && XRES="1280"
@@ -1957,18 +1973,6 @@ prepareInstall() {
           echo ""
   } | unix2dos > "$dir/\$OEM\$/cmdlines.txt"
 
-  [ ! -d "$folder" ] && return 0
-
-  msg="Adding OEM folder to image..."
-  info "$msg" && html "$msg"
-
-  local dest="$dir/\$OEM\$/\$1/"
-  mkdir -p "$dest"
-
-  if ! cp -r "$folder" "$dest"; then
-    error "Failed to copy OEM folder!" && return 1
-  fi
-
   return 0
 }
 
@@ -1992,7 +1996,7 @@ prepare2k3() {
     key="P4WJG-WK3W7-3HM8W-RWHCK-8JTRY"
   fi
 
-  ! prepareInstall "$iso" "$dir" "$desc" "$arch" "$key" "$driver" && return 1
+  prepareInstall "$iso" "$dir" "$desc" "$arch" "$key" "$driver" || return 1
 
   return 0
 }
@@ -2017,7 +2021,7 @@ prepareXP() {
     key="B2RBK-7KPT9-4JP6X-QQFWM-PJD6G"
   fi
 
-  ! prepareInstall "$iso" "$dir" "$desc" "$arch" "$key" "$driver" && return 1
+  prepareInstall "$iso" "$dir" "$desc" "$arch" "$key" "$driver" || return 1
 
   return 0
 }
